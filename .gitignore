@@ -1,0 +1,7 @@
+**.wav
+**.mp3
+bin/**
+.classpath
+.project
+**.jardesc
+.settings/**
