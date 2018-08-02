@@ -2,63 +2,87 @@ package util;
 
 public class CustomTimer
 {
-	public long ActualTime;
-	public long AncienTime;
-	public long difference;
+	private long oldTime, difference;
+	private boolean paused;
+	private int factor = 1;
+	
+	/**
+	 * Creates a Timer using {@link java.lang.System#nanoTime()} and starts it
+	 */
 	public CustomTimer()
 	{
-		this.set0();
+		this.start();
 	}
+	
+	public CustomTimer useNanoSecondsValue()
+	{
+		this.factor = 1;
+		return this;
+	}
+	
+	public CustomTimer useMicroSecondsValue()
+	{
+		this.factor = 1000;
+		return this;
+	}
+	
+	public CustomTimer useMilliSecondsValue()
+	{
+		this.factor = 1000000;
+		return this;
+	}
+	
+	public CustomTimer useSecondsValue()
+	{
+		this.factor = 1000000000;
+		return this;
+	}
+	
 	/**
-	 * Obtenir difference depuis set0() en milliseconde ; Ne reset PAS !
+	 * @return the current difference in nanoseconds
 	 */
 	public long getDifference()
 	{
-		this.AncienTime = this.ActualTime;
-		this.ActualTime = System.currentTimeMillis();
-		this.difference += this.ActualTime - this.AncienTime;
-		return this.difference;
+		if (this.paused)
+			return this.difference;
+		long currentTime = System.nanoTime();
+		this.difference += currentTime - this.oldTime;
+		this.oldTime = currentTime;
+		return this.difference / this.factor;
 	}
+	
 	/**
-	 * Obtenir le nombre de ticks de *compteur* millisecondes (compteur / difference)
-	 * Remet diff�rence � difference % *compteur*
+	 * Starts the timer
 	 */
-	public long getNumberOfTicks(long duration)
+	public void start()
 	{
-		return this.getDifference() / duration;
-	}
-	public void resetUnderATick(long duration)
-	{
-		this.difference = this.getDifference()%duration;
-	}
-	public long getDifferenceDivideBy(long compteur)
-	{
-		long dif = this.getDifference();
-		dif /=compteur;
-		return dif;
-	}
-	/**
-	 * Positionne le 0 chrono
-	 */
-	public void set0()
-	{
-		this.ActualTime = System.currentTimeMillis();
+		this.oldTime = System.nanoTime();
 		this.difference = 0;
+		this.paused = false;
 	}
+
 	/**
-	 * Obtenir difference depuis set0() en Seconde ; Ne reset PAS !
-	 */
-	public float getDifInSec()
-	{
-		return (this.getDifference())/1000F;
-	}
-	/**
-	 * Assigner une difference en milliseconde ; Reset
+	 * Starts the timer with a specific value
 	 */
 	public void setValue (long value)
 	{
-		this.ActualTime = System.currentTimeMillis();
-		this.difference = value;
+		this.oldTime = System.nanoTime();
+		this.difference = value * this.factor;
+		this.paused = false;
+	}
+	
+	/**
+	 * Pauses or resumes the timer
+	 */
+	public void pause()
+	{
+		this.difference = this.getDifference();
+		this.paused = !this.paused;
+	}
+	
+	public boolean isPaused()
+	{
+		return this.paused;
 	}
 }
 
