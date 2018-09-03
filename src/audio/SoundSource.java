@@ -4,29 +4,29 @@ import org.lwjgl.openal.AL10;
 
 import util.InputStreamSource;
 
-class SoundSource extends Source
+public class SoundSource extends AutomaticSource<SoundSource>
 {
 	private AudioBuffer audioBuffer = null;
-	SoundSource(int sourceID, InputStreamSource streamSource, float volume, boolean loop,
+	SoundSource(int sourceID, InputStreamSource streamSource,
 			int bufferSize, Class<? extends Codec> codec)
 	{
-		super(sourceID, streamSource, volume, loop, bufferSize, codec);
+		super(sourceID, streamSource, bufferSize, codec);
 	}
 
 	@Override
-	void setLooping(boolean loop)
+	public void setLooping(boolean loop)
 	{
-		AL10.alSourcei(this.getSourceID(), AL10.AL_LOOPING, loop ? 1 : 0);
+		AL10.alSourcei(this.getOpenALSourceID(), AL10.AL_LOOPING, loop ? 1 : 0);
 	}
 
 	@Override
-	boolean isLooping()
+	public boolean isLooping()
 	{
-		return AL10.alGetSourcei(this.getSourceID(), AL10.AL_LOOPING) == 1;
+		return AL10.alGetSourcei(this.getOpenALSourceID(), AL10.AL_LOOPING) == 1;
 	}
 
 	@Override
-	boolean canLoop()
+	public boolean canLoop()
 	{
 		return true;
 	}
@@ -38,7 +38,7 @@ class SoundSource extends Source
 	}
 
 	@Override
-	AudioBuffer[] getBufferData()
+	public AudioBuffer[] getSourceBuffers()
 	{
 		return new AudioBuffer[]{this.audioBuffer};
 	}

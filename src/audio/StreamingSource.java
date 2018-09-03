@@ -4,44 +4,48 @@ import java.util.LinkedList;
 
 import util.InputStreamSource;
 
-class StreamingSource extends Source
+public class StreamingSource extends AutomaticSource<StreamingSource>
 {
 	private boolean looping;
 	private int bufferNumber;
 	private final LinkedList<AudioBuffer> bufferDatas = new LinkedList<>();
 	private int bufferProcessed;
 
-	StreamingSource(int sourceID, InputStreamSource streamSource, float volume, boolean loop,
+	StreamingSource(int sourceID, InputStreamSource streamSource,
 			int bufferSize, int bufferNumber, Class<? extends Codec> codec)
 	{
-		super(sourceID, streamSource, volume, loop, bufferSize, codec);
+		super(sourceID, streamSource, bufferSize, codec);
 		this.bufferNumber = bufferNumber;
 	}
 
 	@Override
-	void setLooping(boolean l)
+	public void setLooping(boolean l)
 	{
 		this.looping = l;
 	}
 
 	@Override
-	boolean isLooping()
+	public boolean isLooping()
 	{
 		return this.looping;
 	}
 
-	void removeBufferData()
+	AudioBuffer removeBufferData()
 	{
-		this.bufferDatas.removeFirst();
+		this.bufferProcessed ++;
+		return this.bufferDatas.removeFirst();
 	}
 
-	int getBufferNumber()
+	/**
+     * @return the number of buffer(s) used by the source.
+     */
+	public int getBufferNumber()
 	{
 		return this.bufferNumber;
 	}
 
 	@Override
-	boolean canLoop()
+	public boolean canLoop()
 	{
 		return this.getSource().canStreamBeRetrieved();
 	}
@@ -50,11 +54,10 @@ class StreamingSource extends Source
 	void pushBuffer(AudioBuffer buffer)
 	{
 		this.bufferDatas.addLast(buffer);
-		this.bufferProcessed ++;
 	}
 
 	@Override
-	AudioBuffer[] getBufferData()
+	public AudioBuffer[] getSourceBuffers()
 	{
 		return this.bufferDatas.toArray(new AudioBuffer[this.bufferDatas.size()]);
 	}

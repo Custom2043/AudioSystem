@@ -8,8 +8,9 @@ public class AudioBuffer
 	private final byte[] audioData;
 	private final int until;
 	private final Codec writtenBy;
+	private int openALBufferID = -1;
 
-	AudioBuffer(byte[] datas, int until, Codec codec)
+	public AudioBuffer(byte[] datas, int until, Codec codec)
 	{
 		this.audioData = datas;
 		this.until = until;
@@ -39,5 +40,15 @@ public class AudioBuffer
 	public Codec getCodec()
 	{
 		return this.writtenBy;
+	}
+
+	public void setOpenALBufferID(int openALBufferID)
+	{
+		this.openALBufferID = openALBufferID;
+	}
+
+	public int getOpenALBufferID()
+	{
+		return this.openALBufferID;
 	}
 }

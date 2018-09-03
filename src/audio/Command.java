@@ -1,13 +1,14 @@
 package audio;
 
-import static audio.AudioSystem.getSource;
-
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.util.Iterator;
 
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
+import org.lwjgl.util.vector.Vector3f;
 
-import util.CustomTimer;
 import util.InputStreamSource;
 import util.Logger;
 
@@ -36,13 +37,13 @@ abstract class Command
 
     	if (!AudioSystem.isInitialized() || !CommandThread.getThread().shouldContinu())
     	{
-    		Logger.warning("System isn't started");
+    		Logger.error("System isn't started");
     		return t;
     	}
 
     	if (t instanceof SourceCommand && ((SourceCommand)t).source == null)
     	{
-    		Logger.warning("Unexistent source "+((SourceCommand)t).sourceId);
+    		Logger.warning("Unexistent source "+((SourceCommand)t).source.getOpenALSourceID());
     		return t;
     	}
 
@@ -61,22 +62,20 @@ abstract class Command
 
 	abstract void handle();
 
-	static abstract class SourceCommand extends Command
+	static abstract class SourceCommand<T extends Source> extends Command
 	{
-		final int sourceId;
-		final Source source;
-		SourceCommand(int sid)
+		final T source;
+		SourceCommand(T source)
 		{
-			this.sourceId = sid;
-			this.source = getSource(this.sourceId);
+			this.source = source;
 		}
 	}
-	static abstract class GetSetCommand extends SourceCommand
+	static abstract class GetSetCommand<T extends Source> extends SourceCommand<T>
 	{
 		final boolean get;
-		GetSetCommand(boolean g, int sourceId)
+		GetSetCommand(boolean g, T source)
 		{
-			super(sourceId);
+			super(source);
 			this.get = g;
 		}
 	}
@@ -87,25 +86,31 @@ abstract class Command
 		@Override
 		void handle()
 		{
+			CommandThread.getThread().quit();
+			CommandThread.getThread().stopAllLoadings();
 			for (Iterator<Source> iter = AudioSystem.getSourcesIterator();iter.hasNext();)
-				CommandDeleteSource.deleteSource(iter.next(), false);
+				CommandDeleteSource.deleteSource(iter.next());
 		}
 	}
 
 	static class CommandNewSource extends Command
 	{
-		int sourceId;
+		Source source = null;
 		final InputStreamSource streamSource;
-		final boolean loop;
 		final Class<? extends Codec> codec;
 		final int bufferSize, bufferNumber;
-		final float volume;
 
-		CommandNewSource(InputStreamSource streamSource, float volume, boolean loop, int bS, int bN, Class<? extends Codec> c)
+		CommandNewSource()
+		{
+			this.streamSource = null;
+			this.codec = null;
+			this.bufferSize = 0;
+			this.bufferNumber = 0;
+		}
+
+		CommandNewSource(InputStreamSource streamSource, int bS, int bN, Class<? extends Codec> c)
 		{
 			this.streamSource = streamSource;
-			this.volume = volume;
-			this.loop = loop;
 			this.bufferSize = bS;
 			this.bufferNumber = bN; // Source
 			this.codec = c;
@@ -114,62 +119,85 @@ abstract class Command
 		@Override
 		void handle()
 		{
-			this.sourceId = AL10.alGenSources();
+			int sourceId = AL10.alGenSources();
 			int error;
 			if ((error = AL10.alGetError()) != AL10.AL_NO_ERROR)
 			{
 				Logger.warning("Couldn't create the source, error "+error);
 				AudioSystem.setError(error);
-				this.sourceId = -1;
 				return;
 			}
 
-			Source source = null;
-			if (this.bufferNumber != 0)
-				source = new StreamingSource(this.sourceId, this.streamSource, this.volume, this.loop, this.bufferSize, this.bufferNumber, this.codec);
+			if (this.streamSource == null)
+				this.source = new ManualSource(sourceId);
+			else if (this.bufferNumber != 0)
+				this.source = new StreamingSource(sourceId, this.streamSource, this.bufferSize, this.bufferNumber, this.codec);
 			else
-				source = new SoundSource(this.sourceId, this.streamSource, this.volume, this.loop, this.bufferSize, this.codec);
+				this.source = new SoundSource(sourceId, this.streamSource, this.bufferSize, this.codec);
 
-			AudioSystem.addSource(source);
+			AudioSystem.addSource(this.source);
 		}
 	}
 	static class CommandDeleteSource extends SourceCommand
 	{
-		CommandDeleteSource(int sid) {super(sid);}
+		CommandDeleteSource(Source source) {super(source);}
 		@Override
 		void handle()
 		{
-			deleteSource(this.source, true);
+			deleteSource(this.source);
+
+			for (Iterator<Source> iter = AudioSystem.getSourcesIterator();iter.hasNext();)
+				if (iter.next() == this.source)
+					iter.remove();
 		}
-		static void deleteSource(Source source, boolean remove)
+		static void deleteSource(Source source)
 		{
-			if (CommandPlaying.playing(source))
-				CommandPlay.setPlaying(source, false);
+			AL10.alSourceStop(source.getOpenALSourceID());
 
 			deleteBuffersFromSource(source);
 
-			AL10.alDeleteSources(source.getSourceID()); //NE SUPPRIMER PAS LES BUFFERS !
-
-			if (remove) // Can be call by a loop so we may not want to modify the iterator
-				for (Iterator<Source> iter = AudioSystem.getSourcesIterator();iter.hasNext();)
-					if (iter.next() == source)
-						iter.remove();
+			AL10.alDeleteSources(source.getOpenALSourceID()); //NE SUPPRIMER PAS LES BUFFERS !
 		}
 		static void deleteBuffersFromSource(Source source)
 		{
-			if (source.isLoading())
-				CommandThread.getThread().removeLoadingForSource(source);
+			if (source.isAutomatic() && ((AutomaticSource)source).isSourceLoading())
+				CommandThread.getThread().removeLoadingForSource((AutomaticSource)source);
 
-			int numberOfBuffers = AL10.alGetSourcei(source.getSourceID(), AL10.AL_BUFFERS_QUEUED);
-
-			for (int i=0;i<numberOfBuffers;i++)
-				AL10.alDeleteBuffers(AL10.alSourceUnqueueBuffers(source.getSourceID()));
+			int sourceType = AL10.alGetSourcei(source.getOpenALSourceID(), AL10.AL_SOURCE_TYPE);
+			
+			if (sourceType == AL11.AL_STREAMING)
+			{
+				int numberOfBuffers = AL10.alGetSourcei(source.getOpenALSourceID(), AL10.AL_BUFFERS_QUEUED);
+				for (int i=0;i<numberOfBuffers;i++)
+				{
+					int bufferID = AL10.alSourceUnqueueBuffers(source.getOpenALSourceID());
+					if (getBufferUse(bufferID) == 1)
+						AL10.alDeleteBuffers(bufferID);
+				}
+			}
+			else if (sourceType == AL11.AL_STATIC)
+			{
+				int bufferID = AL10.alGetSourcei(source.getOpenALSourceID(), AL10.AL_BUFFER);
+				AL10.alSourcei(source.getOpenALSourceID(), AL10.AL_BUFFER, 0);
+				if (getBufferUse(bufferID) == 1)
+					AL10.alDeleteBuffers(bufferID);
+			}
+			
+		}
+		static int getBufferUse(int bufferID)
+		{
+			int use = 0;
+			for (Iterator<Source> iter = AudioSystem.getSourcesIterator();iter.hasNext();)
+				for (AudioBuffer a : iter.next().getSourceBuffers())
+					if (a.getOpenALBufferID() == bufferID)
+						use ++;
+			return use;
 		}
 	}
 
 	static class CommandPlay extends SourceCommand
 	{
-		CommandPlay(int sid) {super(sid);}
+		CommandPlay(Source source) {super(source);}
 		@Override
 		void handle()
 		{
@@ -179,21 +207,21 @@ abstract class Command
 		{
 			if (state)
 			{
-				Logger.debug("Play source "+source.getSourceID());
-				if (!source.isLoading())
-					AL10.alSourcePlay(source.getSourceID());
+				Logger.debug("Play source "+source.getOpenALSourceID());
+				if (!source.isAutomatic() || !((AutomaticSource)source).isSourceLoading())
+					AL10.alSourcePlay(source.getOpenALSourceID());
 			}
 			else
 			{
-				Logger.debug("Pause source "+source.getSourceID());
-				AL10.alSourcePause(source.getSourceID());
+				Logger.debug("Pause source "+source.getOpenALSourceID());
+				AL10.alSourcePause(source.getOpenALSourceID());
 			}
-			source.setShouldPlay(state);
+			source.setShouldBePlaying(state);
 		}
 	}
 	static class CommandStop extends SourceCommand
 	{
-		CommandStop(int sid) {super(sid);}
+		CommandStop(Source source) {super(source);}
 		@Override
 		void handle()
 		{
@@ -202,17 +230,17 @@ abstract class Command
 	}
 	static class CommandPause extends SourceCommand
 	{
-		CommandPause(int sid) {super(sid);}
+		CommandPause(Source source) {super(source);}
 		@Override
 		void handle()
 		{
-			CommandPlay.setPlaying(this.source, !this.source.shouldPlay());
+			CommandPlay.setPlaying(this.source, !this.source.shouldBePlaying());
 		}
 	}
 	static class CommandPlaying extends SourceCommand
 	{
 		boolean playing;
-		CommandPlaying(int sid) {super(sid);}
+		CommandPlaying(Source source) {super(source);}
 		@Override
 		void handle()
 		{
@@ -220,40 +248,79 @@ abstract class Command
 		}
 		static boolean playing(Source source)
 		{
-			return AL10.alGetSourcei(source.getSourceID(), AL10.AL_SOURCE_STATE) == AL10.AL_PLAYING;
+			return AL10.alGetSourcei(source.getOpenALSourceID(), AL10.AL_SOURCE_STATE) == AL10.AL_PLAYING;
 		}
 	}
-	static class CommandLoading extends SourceCommand
+	static class CommandLoading extends SourceCommand<AutomaticSource>
 	{
 		boolean loading;
-		CommandLoading(int sid) {super(sid);}
+		CommandLoading(AutomaticSource source) {super(source);}
 		@Override
 		void handle()
 		{
-			this.loading = this.source.isLoading();
+			this.loading = this.source.isSourceLoading();
+		}
+	}
+
+	static class CommandVolume extends GetSetCommand
+	{
+		float value;
+		CommandVolume(Source source, float v){super(SET, source);this.value = v;}
+		CommandVolume(Source source){super(GET, source);}
+		@Override
+		void handle()
+		{
+			if (this.get)
+				this.value = this.source.getSourceVolume();
+			else
+			{
+				this.source.setSourceVolume(this.value);
+				AL10.alSourcef(this.source.getOpenALSourceID(), AL10.AL_GAIN, this.value * AudioSystem.masterVolume);
+			}
 		}
 	}
 
 	static class CommandFloat extends GetSetCommand
 	{
 		float value;int dataType;
-		CommandFloat(int sourceId, int data, float v){super(SET, sourceId);this.value = v;this.dataType = data;}
-		CommandFloat(int sourceId, int data){super(GET, sourceId);this.dataType = data;}
+		CommandFloat(Source source, int data, float v){super(SET, source);this.value = v;this.dataType = data;}
+		CommandFloat(Source source, int data){super(GET, source);this.dataType = data;}
 		@Override
 		void handle()
 		{
 			if (this.get)
-				this.value = AL10.alGetSourcef(this.source.getSourceID(), this.dataType);
+				this.value = AL10.alGetSourcef(this.source.getOpenALSourceID(), this.dataType);
 			else
-				AL10.alSourcef(this.source.getSourceID(), this.dataType, this.value);
+				AL10.alSourcef(this.source.getOpenALSourceID(), this.dataType, this.value);
 		}
 	}
 
-	static class CommandLoop extends GetSetCommand
+	static class CommandVector extends GetSetCommand
+	{
+		Vector3f value; int dataType;
+		CommandVector(Source source, int data, Vector3f p){super(SET, source);this.value = p; this.dataType = data;}
+		CommandVector(Source source, int data){super(GET, source);this.dataType = data;}
+		@Override
+		void handle()
+		{
+			if (this.get)
+			{
+				ByteBuffer temp = ByteBuffer.allocateDirect(12);
+				temp.order(ByteOrder.nativeOrder());
+				FloatBuffer buf = temp.asFloatBuffer();
+				AL10.alGetSourcef(this.source.getOpenALSourceID(), this.dataType, buf);
+				this.value = new Vector3f(buf.get(), buf.get(), buf.get());
+			}
+			else
+				AL10.alSource3f(this.source.getOpenALSourceID(), this.dataType, this.value.x, this.value.y, this.value.z);
+		}
+	}
+
+	static class CommandLoop extends GetSetCommand<AutomaticSource>
 	{
 		boolean value; int number;
-		CommandLoop(int sourceId, boolean v){super(SET, sourceId);this.value = v;}
-		CommandLoop(int sourceId){super(GET, sourceId);}
+		CommandLoop(AutomaticSource source, boolean v){super(SET, source);this.value = v;}
+		CommandLoop(AutomaticSource source){super(GET, source);}
 		@Override
 		void handle()
 		{
@@ -266,121 +333,140 @@ abstract class Command
 				this.source.setLooping(this.value);
 		}
 	}
-	/*static class CommandVector extends GetSetCommand
+
+	static class CommandRelative extends GetSetCommand
 	{
-		Vector3f vec; int dataType;
-		CommandVector(int sourceId, int data, Vector3f p){super(SET, sourceId);this.vec = p; this.dataType = data;}
-		CommandVector(int sourceId, int data){super(GET, sourceId);this.dataType = data;}
+		boolean value; int number;
+		CommandRelative(Source source, boolean v){super(SET, source);this.value = v;}
+		CommandRelative(Source source){super(GET, source);}
 		@Override
 		void handle()
 		{
 			if (this.get)
-			{
-				FloatBuffer buf = CommandThread.createFloatBuffer(3);
-				AL10.alGetSourcef(this.source.getSourceID(), this.dataType, buf);
-				this.vec = new Vector3f(buf.get(), buf.get(), buf.get());
-			}
+				AL10.alSourcei(this.source.getOpenALSourceID(), AL10.AL_SOURCE_RELATIVE, this.value ? AL10.AL_TRUE : AL10.AL_FALSE);
 			else
-				AL10.alSource3f(this.source.getSourceID(), this.dataType, this.vec.x, this.vec.y, this.vec.z);
+				this.value = AL10.alGetSourcei(this.source.getOpenALSourceID(), AL10.AL_SOURCE_RELATIVE) == AL10.AL_TRUE;
 		}
-	}*/
-	/*static class CommandAttenuationMod extends Command
+	}
+
+	static class CommandMasterVolume extends Command
 	{
-		int atte; boolean act;
-		CommandAttenuationMod(){this.act = GET;}
-		CommandAttenuationMod(int a){this.act = SET;this.atte = a;}
+		float value;
+		boolean get;
+		public CommandMasterVolume(float value) {this.get = false; this.value = value;}
+		public CommandMasterVolume() {this.get = true;}
+
 		@Override
 		void handle()
 		{
-			if (this.act == GET)
-				this.atte = AL10.alGetInteger(AL10.AL_DISTANCE_MODEL);
+			if (this.get)
+				this.value = AudioSystem.masterVolume;
 			else
 			{
-				if (this.atte == AudioSystem.NO_ATTE)
-					AL10.alDistanceModel(AL10.AL_NONE);
-				if (this.atte == AudioSystem.LINEAR_ATTE)
-					AL10.alDistanceModel(AL11.AL_LINEAR_DISTANCE);
-				if (this.atte == AudioSystem.LINEAR_ATTE_CLAMPED)
-					AL10.alDistanceModel(AL11.AL_LINEAR_DISTANCE_CLAMPED);
-				if (this.atte == AudioSystem.EXPO_ATTE)
-					AL10.alDistanceModel(AL11.AL_EXPONENT_DISTANCE);
-				if (this.atte == AudioSystem.EXPO_ATTE_CLAMPED)
-					AL10.alDistanceModel(AL11.AL_EXPONENT_DISTANCE_CLAMPED);
-				if (this.atte == AudioSystem.INVERSE_ATTE)
-					AL10.alDistanceModel(AL10.AL_INVERSE_DISTANCE);
-				if (this.atte == AudioSystem.INVERSE_ATTE_CLAMPED)
-					AL10.alDistanceModel(AL10.AL_INVERSE_DISTANCE_CLAMPED);
+				if (this.value < 0 || this.value > 1)
+				{
+					AudioSystem.setError(AudioSystem.ERROR_INVALID_VALUE);
+					return;
+				}
+
+				AudioSystem.masterVolume = this.value;
+				Source s;
+				for (Iterator<Source> iter = AudioSystem.getSourcesIterator();iter.hasNext();)
+					AL10.alSourcef((s = iter.next()).getOpenALSourceID(), AL10.AL_GAIN, this.value * s.getSourceVolume());
 			}
 		}
-	}*/
+	}
+
 	static class CommandGetBuffer extends SourceCommand
 	{
 		AudioBuffer[] buf;
 
-		CommandGetBuffer(int sid)
+		CommandGetBuffer(Source source)
 		{
-			super(sid);
+			super(source);
 		}
 
 		@Override
 		void handle()
 		{
-			this.buf = this.source.getBufferData();
+			this.buf = ((AutomaticSource)this.source).getSourceBuffers();
 		}
     }
-    static class CommandGetDatas extends SourceCommand
+    static class CommandGetDatas extends SourceCommand<AutomaticSource>
     {
     	int channels, samplerate, sampleSize, totalSize;
-    	CommandGetDatas(int sid){super(sid);}
+    	CommandGetDatas(AutomaticSource source){super(source);}
     	@Override
 		void handle()
     	{
-    		//Codec can change, so we need tu put this of the thread
+    		//Codec can change, so we need to put this on the thread
     		this.channels = this.source.getCurrentCodec().getChannelsNumber();
     		this.samplerate = this.source.getCurrentCodec().getSamplerate();
     		this.sampleSize = this.source.getCurrentCodec().getBitsPerSample();
     		this.totalSize = this.source.getCurrentCodec().getTotalSize();
     	}
     }
-	static class CommandPosition extends GetSetCommand
+    static class CommandAttenuationMod extends Command
 	{
 		int value;
-		CommandPosition(int sourceId) {super(GET, sourceId);}
-		CommandPosition(int sourceId, int v) {super(SET, sourceId);this.value=v;}
+		boolean get;
+		public CommandAttenuationMod(int value) {this.get = false; this.value = value;}
+		public CommandAttenuationMod() {this.get = true;}
+
 		@Override
 		void handle()
 		{
 			if (this.get)
-				this.value = AL10.alGetSourcei(this.source.getSourceID(), AL11.AL_BYTE_OFFSET);
-			else if (!this.source.streaming())
-				AL10.alSourcei(this.source.getSourceID(), AL11.AL_BYTE_OFFSET, this.value);
+				this.value = AudioSystem.distanceModel;
+			else
+				AL10.alDistanceModel(AudioSystem.distanceModel = this.value);
+		}
+	}
+
+    static class CommandOffset extends GetSetCommand
+	{
+		int value;
+		CommandOffset(Source source) {super(GET, source);}
+		CommandOffset(Source source, int v) {super(SET, source);this.value=v;}
+		@Override
+		void handle()
+		{
+			if (this.get)
+				this.value = AL10.alGetSourcei(this.source.getOpenALSourceID(), AL11.AL_SAMPLE_OFFSET);
+			else if (!(this.source instanceof StreamingSource))
+				AL10.alSourcei(this.source.getOpenALSourceID(), AL11.AL_SAMPLE_OFFSET, this.value);
 			else
 			{
-				if (!this.source.canLoop())
+				StreamingSource ss = (StreamingSource)this.source;
+				if (this.value >= ss.getProcessedBuffer() * ss.getBufferSize() / ss.getCurrentCodec().getSampleSize() &&
+						this.value < (ss.getProcessedBuffer() + ss.getSourceBuffers().length) * ss.getBufferSize() / ss.getCurrentCodec().getSampleSize())
 				{
-					AudioSystem.setError(AudioSystem.ERROR_CANT_READ_STREAM);
-					return;
+					int bufferPrior = this.value - ss.getProcessedBuffer() * ss.getBufferSize() / ss.getCurrentCodec().getSampleSize();
+					bufferPrior = bufferPrior / (ss.getBufferSize() / ss.getCurrentCodec().getSampleSize());
+					
+					if (ss.shouldBePlaying() && !ss.isSourceLoading())
+						CommandThread.getThread().addLoading(ss, 0);
+
+					// We remove unused buffers
+					for (int i=0;i<bufferPrior;i++)
+					{
+						AL10.alSourceUnqueueBuffers(ss.getOpenALSourceID());
+						ss.removeBufferData();
+					}
+					
+					AL10.alSourcei(this.source.getOpenALSourceID(), AL11.AL_SAMPLE_OFFSET, this.value - (ss.getProcessedBuffer() + bufferPrior) * ss.getBufferSize() / ss.getCurrentCodec().getSampleSize());
 				}
-				CommandThread.getThread().addLoading(this.source, this.value);
+				else
+				{ // Need to reload the stream because the value is before the earliest buffer in memory
+					CommandThread.getThread().removeLoadingForSource(ss);
+					if (!((StreamingSource)this.source).canLoop())
+					{
+						AudioSystem.setError(AudioSystem.ERROR_CANT_READ_STREAM);
+						return;
+					}
+					CommandThread.getThread().addLoading((StreamingSource)this.source, this.value);
+				}
 			}
 		}
 	}
-	static class CommandVolumeFading
-	{
-		private final CustomTimer timer;
-		final int sourceId, milli;
-		final float baseVolume, endVolume;
-		CommandVolumeFading(int sid, float bV, float eV, int milli)
-		{
-			this.sourceId = sid;
-			this.baseVolume = bV; this.endVolume = eV; this.milli = milli;
-			this.timer = new CustomTimer();
-		}
-		int getMilli()
-		{
-			return (int)this.timer.getDifference();
-		}
-	}
-
-
 }

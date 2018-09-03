@@ -1,24 +1,23 @@
 package audio;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
-import java.nio.IntBuffer;
 import java.util.Iterator;
+import java.util.List;
 
 import org.lwjgl.openal.AL10;
 
-import audio.Command.CommandVolumeFading;
+import util.CustomTimer;
 import util.Logger;
 import util.UpdateList;
 
 class CommandThread extends Thread
 {
 	private boolean continu;
-	public UpdateList<Command> list = new UpdateList<>();
+	public UpdateList<Command> commandList = new UpdateList<>();
 	private static CommandThread instance = new CommandThread();
-	public UpdateList<CommandVolumeFading> fadings = new UpdateList<>();
 	private UpdateList<LoadingThread> loadings = new UpdateList<>();
+	private CustomTimer timer = new CustomTimer();
+	private boolean oneLoadingOver = false;
+	private int refreshPeriod = 1000000;
 
 	public static CommandThread getThread()
 	{
@@ -33,132 +32,189 @@ class CommandThread extends Thread
 	{
 		while (this.continu)
 		{
-			for (Iterator<Source> iter = AudioSystem.getSourcesIterator() ; iter.hasNext() ; )
+			if (this.timer.getDifference() >= this.refreshPeriod)
 			{
-				Source source = iter.next();
-				if (source.streaming())
-				{
-					int processed = AL10.alGetSourcei(source.getSourceID(), AL10.AL_BUFFERS_PROCESSED);
-					if (processed > 0)
-					{
-						if (source.getCurrentCodec().isStreamOver())
-							if (source.isLooping())
-								source.addLoop();
-							else
-								source.setShouldPlay(false);
+				for (Iterator<Source> iter = AudioSystem.getSourcesIterator() ; iter.hasNext() ; )
+				{ // Update every playing source (load new buffer, discard read ones or starts loading)
+					Source source = iter.next();
+					this.updatePlayingSource(source);
 
-						if (source.shouldPlay() && !source.isLoading())
-							this.addLoading(source, 0);
-
-						for (int i=0;i<processed;i++)
-						{
-							AL10.alSourceUnqueueBuffers(source.getSourceID());
-							source.getStreamingSource().removeBufferData();
-						}
-					}
+					int error;
+			        if ((error = AL10.alGetError()) != 0)
+			        {
+			        	Logger.error("Error during updating source "+source.getOpenALSourceID()+", OpenAL error : "+error);
+			        	AudioSystem.setError(error);
+			        }
 				}
+
+				for (Source s : AudioSystem.getSources())
+				{ // Handle callbacks of all sources
+					List<SourceCallBack> l = s.getCallBack().getList();
+					for (SourceCallBack sc : l)
+						try {sc.callback();}
+						catch(Exception e) {Logger.error("Error during source "+s.getOpenALSourceID()+" callback : "+sc, e);}
+				}
+
+				this.timer.setValue(this.timer.getDifference() % this.refreshPeriod);
 			}
 
-			for (Iterator<Command> iter = this.list.getList().iterator();iter.hasNext();)
-			{
+			for (Iterator<LoadingThread> iter = this.loadings.getList().iterator();iter.hasNext();)
+			{ // Handle finished loading
+				LoadingThread th = iter.next();
+				if (th.isLoadingOver())
+				{
+					this.handleLoadedBuffer(th);
+					iter.remove();
+
+					int error;
+			        if ((error = AL10.alGetError()) != 0)
+			        {
+			        	Logger.error("Error during loading source "+th.source.getOpenALSourceID()+", OpenAL error : "+error);
+			        	AudioSystem.setError(error);
+			        }
+				}
+			}
+			
+			for (Iterator<Command> iter = this.commandList.getList().iterator();iter.hasNext() && this.continu;)
+			{ // Handle commands (Error are handle by the command itself)
 				Command c = iter.next();
 				c.handle();
 				c.setEnded();
 				iter.remove();
 			}
 
-			for (Iterator<LoadingThread> iter = this.loadings.getList().iterator();iter.hasNext();)
-			{
-				LoadingThread th = iter.next();
-				if (th.isLoadingOver())
-				{
-					Logger.debug("Loaded a buffer for source "+th.source.getSourceID());
-					Logger.debug("Buffer length "+th.getOutBuffer().toByteBuffer().limit());
-					th.source.setLoading(false);
-					AudioBuffer buf = th.getOutBuffer();
-
-					if (buf.getLimit() == 0)
-						continue;
-
-					if (th.getToSkip() != 0)
-					{ // We need to get rid of the current buffers
-						AL10.alSourceStop(th.source.getSourceID());
-						Command.CommandDeleteSource.deleteBuffersFromSource(th.source);
-					}
-
-					int bufferID = AL10.alGenBuffers();
-					AL10.alBufferData(bufferID, buf.getCodec().getALFormat(), buf.toByteBuffer(), buf.getCodec().getSamplerate());
-					AL10.alSourceQueueBuffers(th.source.getSourceID(), bufferID);
-					th.source.pushBuffer(th.getOutBuffer());
-					iter.remove();
-
-					// If the source is still missing buffers, we start a new loading
-					if (th.source.streaming())
-						if (th.source.getStreamingSource().getBufferNumber() - th.source.getStreamingSource().getBufferData().length > 0)
-							this.addLoading(th.source, 0);
-
-					if (th.source.shouldPlay() && AL10.alGetSourcei(th.source.getSourceID(), AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING)
-						AL10.alSourcePlay(th.source.getSourceID());
-
-				}
-			}
-
-			for (Iterator<CommandVolumeFading> iter = this.fadings.getList().iterator();iter.hasNext();)
-			{
-				CommandVolumeFading fading = iter.next();
-				float v = fading.baseVolume + (fading.endVolume - fading.baseVolume) * (fading.getMilli() / (float)fading.milli);
-				new Command.CommandFloat(fading.sourceId, AL10.AL_GAIN, v).handle();
-				if (fading.getMilli() >= fading.milli)
-					iter.remove();
-			}
-			if (this.continu && this.list.getList().size() == 0)
-				try {Thread.sleep(1);}
-				catch (InterruptedException e) {}
-
+			if (this.continu && this.commandList.getList().size() == 0 && !this.atLeastOneloadingOver())
+				try {
+					Thread.sleep(Math.max(0, this.refreshPeriod - this.timer.getDifference()));
+				} catch(InterruptedException e) {}
 		}
-	}
-	static IntBuffer createIntBuffer(int size)
-	{
-		ByteBuffer temp = ByteBuffer.allocateDirect(4 * size);
-		temp.order(ByteOrder.nativeOrder());
-		return temp.asIntBuffer();
-	}
-	static FloatBuffer createFloatBuffer(int size)
-	{
-		ByteBuffer temp = ByteBuffer.allocateDirect(4 * size);
-		temp.order(ByteOrder.nativeOrder());
-		return temp.asFloatBuffer();
 	}
 	void quit()
 	{
 		this.continu = false;
-		try {this.join();}
-		catch (InterruptedException e) {Logger.error(e);}
 	}
 	void addCommand(Command c)
 	{
-		this.list.add(c);
+		this.commandList.add(c);
 		this.interrupt();
 	}
-	void addLoading(Source source, int toSkip)
+	synchronized boolean atLeastOneloadingOver()
 	{
-		if (!source.isLoading())
+		boolean l = this.oneLoadingOver;
+		this.oneLoadingOver = false;
+		return l;
+	}
+	synchronized void notifyLoadingOver()
+	{
+		this.oneLoadingOver = true;
+	}
+	void addLoading(AutomaticSource source, int toSkip)
+	{
+		if (!source.isSourceLoading())
 		{
-			Logger.debug("Start loading source "+source.getSourceID());
+			Logger.debug("Start loading source "+source.getOpenALSourceID());
+
+			List<SourceCallBack> l = source.getCallBack().getList();
+			for (SourceCallBack sc : l)
+				sc.startsLoading(toSkip);
+
 			source.setLoading(true);
 			this.loadings.add(new LoadingThread(source, toSkip));
 			this.interrupt();
 		}
 	}
-	void removeLoadingForSource(Source s)
+	void removeLoadingForSource(AutomaticSource s)
 	{
-		Logger.debug("Stop loading source "+s.getSourceID());
+		Logger.debug("Stop loading source "+s.getOpenALSourceID());
 		for (Iterator<LoadingThread> iter = this.loadings.getList().iterator();iter.hasNext();)
 			if (iter.next().source == s)
 				iter.remove(); // Doesn't stop it, but make sure we don't with the output buffer
 	}
+	void stopAllLoadings()
+	{
+		this.loadings = new UpdateList<>();
+	}
 	boolean shouldContinu()
 	{
 		return this.continu;
+	}
+	void updatePlayingSource(Source source)
+	{
+		if (source instanceof StreamingSource)
+		{
+			StreamingSource streamingSource = (StreamingSource)source;
+			int processed = AL10.alGetSourcei(source.getOpenALSourceID(), AL10.AL_BUFFERS_PROCESSED);
+			if (processed > 0)
+			{
+				if (streamingSource.getCurrentCodec().isStreamOver())
+					if (streamingSource.isLooping())
+					{
+						streamingSource.addLoop();
+						for (SourceCallBack sc : streamingSource.getCallBack().getList())
+							sc.looped();
+					}
+					else
+						streamingSource.setShouldBePlaying(false);
+
+				if (streamingSource.shouldBePlaying() && !streamingSource.isSourceLoading())
+					this.addLoading(streamingSource, 0);
+
+				for (int i=0;i<processed;i++)
+				{
+					AL10.alSourceUnqueueBuffers(streamingSource.getOpenALSourceID());
+					AudioBuffer buffer = streamingSource.removeBufferData();
+					for (SourceCallBack sc : streamingSource.getCallBack().getList())
+						sc.bufferProcessed(buffer);
+				}
+			}
+		}
+		if (source instanceof ManualSource)
+		{
+			int processed = AL10.alGetSourcei(source.getOpenALSourceID(), AL10.AL_BUFFERS_PROCESSED);
+			for (int i=0;i<processed;i++)
+			{
+				AL10.alSourceUnqueueBuffers(source.getOpenALSourceID());
+				AudioBuffer buffer = ((ManualSource)source).removeBufferData();
+				for (SourceCallBack sc : ((ManualSource)source).getCallBack().getList())
+					sc.bufferProcessed(buffer);
+			}
+		}
+	}
+	void handleLoadedBuffer(LoadingThread th)
+	{
+		Logger.debug("Loaded a "+th.getOutBuffer().toByteBuffer().limit()+" buffer for source "+th.source.getOpenALSourceID());
+		th.source.setLoading(false);
+		AudioBuffer buf = th.getOutBuffer();
+
+		if (buf.getLimit() == 0)
+			return;
+
+		if (th.getToSkip() != 0)
+		{ // We need to get rid of the current buffers
+			AL10.alSourceStop(th.source.getOpenALSourceID());
+			Command.CommandDeleteSource.deleteBuffersFromSource(th.source);
+		}
+
+		buf.setOpenALBufferID(AL10.alGenBuffers());
+		AL10.alBufferData(buf.getOpenALBufferID(), buf.getCodec().getALFormat(), buf.toByteBuffer(), buf.getCodec().getSamplerate());
+		
+		if (th.source instanceof SoundSource)
+			AL10.alSourcei(th.source.getOpenALSourceID(), AL10.AL_BUFFER, buf.getOpenALBufferID());
+		else
+			AL10.alSourceQueueBuffers(th.source.getOpenALSourceID(), buf.getOpenALBufferID());
+		
+		th.source.pushBuffer(buf);
+
+		// If the source is still missing buffers, we start a new loading
+		if (th.source instanceof StreamingSource)
+			if (((StreamingSource)th.source).getBufferNumber() - ((StreamingSource)th.source).getSourceBuffers().length > 0)
+				this.addLoading(th.source, 0);
+
+		if (th.source.shouldBePlaying() && AL10.alGetSourcei(th.source.getOpenALSourceID(), AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING)
+			AL10.alSourcePlay(th.source.getOpenALSourceID());
+
+		List<SourceCallBack> l = th.source.getCallBack().getList();
+		for (SourceCallBack sc : l)
+			sc.bufferLoaded(buf);
 	}
 }

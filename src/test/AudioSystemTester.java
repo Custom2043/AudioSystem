@@ -2,12 +2,13 @@ package test;
 
 import audio.AudioSystem;
 import audio.CodecMP3;
+import audio.StreamingSource;
 import util.FileInputStreamSource;
 import util.Logger;
 
 public class AudioSystemTester {
 
-	public static int sourceId;
+	public static StreamingSource source;
 	public static void main(String[] args) throws InterruptedException
 	{
 		AudioSystem.init();
@@ -18,12 +19,14 @@ public class AudioSystemTester {
 
 		AudioSystem.setDefaultBuffers(3, 16384, -1);
 
-		sourceId = AudioSystem.newStreamingSource(new FileInputStreamSource("welcome.mp3"), 1, false);
+		source = AudioSystem.newStreamingSource(new FileInputStreamSource("Imprinting.mp3"));
 
-		AudioSystem.play(sourceId);
+		source.play();
 
-		while (AudioSystem.loading(sourceId) || AudioSystem.playing(sourceId))
-			Thread.sleep(20);
+		Thread.sleep(3000);
+		
+		//while (source.loading() || source.playing())
+			//Thread.sleep(20);
 
 		AudioSystem.quit();
 	}

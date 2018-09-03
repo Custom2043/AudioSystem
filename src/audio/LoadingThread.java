@@ -7,7 +7,7 @@ package audio;
  */
 class LoadingThread extends Thread
 {
-	Source source;
+	AutomaticSource source;
 	private AudioBuffer out = null;
 	private int toSkip;
 
@@ -23,7 +23,7 @@ class LoadingThread extends Thread
 	 *            Datas already loaded to add to the buffer Only used by streaming
 	 *            sounds
 	 */
-	LoadingThread(Source source, int tS)
+	LoadingThread(AutomaticSource source, int tS)
 	{
 		this.source = source;
 		this.toSkip = tS;

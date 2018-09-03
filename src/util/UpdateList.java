@@ -1,42 +1,97 @@
 package util;
 
-import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.List;
 
 public class UpdateList<Type>
 {
-	private ArrayList<Type> buf = new ArrayList<>(); // Utilisé pendant que l'opérateur utilise getList();
-	private ArrayList<Type> vrai = new ArrayList<>();
-	/**
-	 * Used by thread 1
-	 */
-	public synchronized void add(Type t)
+	private List<Type> updatedList = new LinkedList<>();
+	private List<Type> addings = new LinkedList<>();
+	private List<Type> removals = new LinkedList<>();
+	
+	public UpdateList()
 	{
-		this.buf.add(t);
+		this(new LinkedList<Type>(), new LinkedList<Type>(), new LinkedList<Type>());
 	}
+	
+	public UpdateList(List<Type> updatedList, List<Type> addingsTemp, List<Type> removalsTemp)
+	{
+		this.updatedList = updatedList;
+		this.addings = addingsTemp;
+		this.removals = removalsTemp;
+	}
+
+
 	/**
-	 * Used by thread 2
+	 * Can be called by multiple thread
+	 * Add the object to the adding temp list
+	 */
+	public synchronized void add(Type object)
+	{
+		this.addings.add(object);
+	}
+
+	/**
+	 * Can be called by multiple thread
+	 * Add the object to the removals temp list
+	 */
+	public synchronized void remove(Type object)
+	{
+		this.removals.remove(object);
+	}
+
+	/**
+	 * Can be called by multiple thread
+	 * Clear temp list
+	 */
+	public synchronized void clearTemp()
+	{
+		this.addings.clear();
+		this.removals.clear();
+	}
+	
+	/**
+	 * Can be called by multiple thread
+	 * Clear temp list
+	 */
+	public synchronized List<Type> getAddingsTempList()
+	{
+		return this.addings;
+	}
+	
+	/**
+	 * Can be called by multiple thread
+	 * Clear temp list
+	 */
+	public synchronized List<Type> getRemovalsTempList()
+	{
+		return this.removals;
+	}
+	
+	/**
+	 * Should be called by a single thread or one at a time
+	 */
+	public synchronized void clearUpdated()
+	{
+		this.updatedList.clear();
+	}
+	
+	/**
+	 * Should be called by a single thread or one at a time
 	 */
 	public synchronized void update()
 	{
-		this.vrai.addAll(this.buf);
-		this.buf.clear();
+		this.updatedList.addAll(this.addings);
+		this.updatedList.removeAll(this.removals);
+		this.clearTemp();
 	}
+
 	/**
-	 * Used by thread 2
+	 * Should be called by a single thread or one at a time
 	 */
-	public ArrayList<Type> getList()
+	public synchronized List<Type> getList()
 	{
 		this.update();
-		return this.vrai;
-	}
-	/**
-	 * Used by thread 1
-	 */
-	public synchronized ArrayList<Type> getImage()
-	{
-		ArrayList<Type> image = new ArrayList<>();
-		image.addAll(this.vrai);
-		image.addAll(this.buf);
-		return image;
+		return this.updatedList;
 	}
 }
