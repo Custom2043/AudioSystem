@@ -18,16 +18,16 @@ public class AudioSystemTester {
 		Logger.setLoggerProperties(true, true, true, true);
 
 		AudioSystem.setDefaultBuffers(3, 16384, -1);
-
-		source = AudioSystem.newStreamingSource(new FileInputStreamSource("Imprinting.mp3"));
-
-		source.play();
-
-		Thread.sleep(3000);
 		
-		//while (source.loading() || source.playing())
-			//Thread.sleep(20);
-
+		source = AudioSystem.newStreamingSource(new FileInputStreamSource("Touhou 6 Intro.mp3"));
+		
+		source.setVolume(.5f);
+		
+		source.play();
+				
+		while (source.loading() || source.playing())
+			Thread.sleep(20);
+		
 		AudioSystem.quit();
 	}
 }

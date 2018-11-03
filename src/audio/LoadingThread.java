@@ -85,6 +85,7 @@ class LoadingThread extends Thread
 	private synchronized void setBuffer(AudioBuffer buffer)
 	{
 		this.out = buffer;
+		CommandThread.getThread().notifyLoadingOver();
 	}
 
 	/**

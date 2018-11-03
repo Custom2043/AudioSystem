@@ -58,34 +58,41 @@ class CommandThread extends Thread
 				this.timer.setValue(this.timer.getDifference() % this.refreshPeriod);
 			}
 
-			for (Iterator<LoadingThread> iter = this.loadings.getList().iterator();iter.hasNext();)
-			{ // Handle finished loading
-				LoadingThread th = iter.next();
-				if (th.isLoadingOver())
-				{
-					this.handleLoadedBuffer(th);
-					iter.remove();
-
-					int error;
-			        if ((error = AL10.alGetError()) != 0)
-			        {
-			        	Logger.error("Error during loading source "+th.source.getOpenALSourceID()+", OpenAL error : "+error);
-			        	AudioSystem.setError(error);
-			        }
+			if (this.atLeastOneloadingOver())
+			{
+				for (Iterator<LoadingThread> iter = this.loadings.getList().iterator();iter.hasNext();)
+				{ // Handle finished loading
+					
+					LoadingThread th = iter.next();
+					if (th.isLoadingOver())
+					{
+						this.handleLoadedBuffer(th);
+						iter.remove();
+	
+						int error;
+				        if ((error = AL10.alGetError()) != 0)
+				        {
+				        	Logger.error("Error during loading source "+th.source.getOpenALSourceID()+", OpenAL error : "+error);
+				        	AudioSystem.setError(error);
+				        }
+					}
 				}
 			}
 			
-			for (Iterator<Command> iter = this.commandList.getList().iterator();iter.hasNext() && this.continu;)
-			{ // Handle commands (Error are handle by the command itself)
-				Command c = iter.next();
-				c.handle();
-				c.setEnded();
-				iter.remove();
+			if (this.commandList.getList().size() > 0)
+			{
+				for (Iterator<Command> iter = this.commandList.getList().iterator();iter.hasNext() && this.continu;)
+				{ // Handle commands (Error are handle by the command itself)
+					Command c = iter.next();
+					c.handle();
+					c.setEnded();
+					iter.remove();
+				}
 			}
 
 			if (this.continu && this.commandList.getList().size() == 0 && !this.atLeastOneloadingOver())
 				try {
-					Thread.sleep(Math.max(0, this.refreshPeriod - this.timer.getDifference()));
+					Thread.sleep(0, (int)Math.max(0, this.refreshPeriod - this.timer.getDifference()));
 				} catch(InterruptedException e) {}
 		}
 	}
@@ -107,6 +114,7 @@ class CommandThread extends Thread
 	synchronized void notifyLoadingOver()
 	{
 		this.oneLoadingOver = true;
+		this.interrupt();
 	}
 	void addLoading(AutomaticSource source, int toSkip)
 	{

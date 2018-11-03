@@ -1,5 +1,6 @@
 package util;
 
+import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
@@ -26,7 +27,7 @@ public class FileInputStreamSource implements InputStreamSource
 	{
 		try
 		{
-			return new FileInputStream(this.file);
+			return new BufferedInputStream(new FileInputStream(this.file));
 		}
 		catch(Exception e){Logger.error("Can't create stream : "+this.file.toString());Logger.error(e);}
 		return null;

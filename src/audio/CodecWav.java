@@ -34,8 +34,27 @@ public class CodecWav extends Codec
 		{
 			byte[] b = new byte[length * this.getSampleSize()];
 			int read = this.stream.read(b);
+			
+			if (this.bitsPerChannel > 16)
+			{
+				byte[] total = new byte[length * 2 * this.channels];
+				int bytePerChannel = this.bitsPerChannel / 8;
+				
+				int j = 0;
+				for (int i=0;i<total.length;i+=2)
+				{
+					total[i] = b[j + bytePerChannel - 2];
+					total[i + 1] = b[j + bytePerChannel - 1];
+					j += bytePerChannel;
+				}
+				
+				b = total;
+				read = read * 2 / bytePerChannel;
+			}
+			
 			if (this.stream.available() <= 0)
 				this.over = true;
+			
 			return new AudioBuffer(b, read, this);
 		}
 		catch (IOException e) {Logger.error(e);}
